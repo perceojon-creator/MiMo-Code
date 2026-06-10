@@ -10,6 +10,10 @@
   <a href="README.zh.md">中文</a> | English
 </p>
 
+<p align="center">
+  <a href="https://mimo.xiaomi.com/en/mimocode">Website</a> | <a href="https://mimo.xiaomi.com/en/blog/mimo-code-long-horizon">Blog</a>
+</p>
+
 ---
 
 MiMoCode is a terminal-native AI coding assistant. It can read and write code, run commands, manage Git, and use a persistent memory system to keep a deep understanding of your project across sessions while continuously improving itself.
