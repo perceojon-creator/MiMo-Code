@@ -1,10 +1,11 @@
-import { chmod, mkdir, readFile, stat as statFile, writeFile } from "fs/promises"
+import { chmod, mkdir, readFile, stat as statFile } from "fs/promises"
 import { createWriteStream, existsSync, statSync } from "fs"
 import { realpathSync } from "fs"
 import { dirname, join, relative, resolve as pathResolve, win32 } from "path"
 import { Readable } from "stream"
 import { pipeline } from "stream/promises"
 import { Glob } from "@mimo-ai/shared/util/glob"
+import { AppFileSystem } from "@mimo-ai/shared/filesystem"
 
 // Fast sync version for metadata checks
 export async function exists(p: string): Promise<boolean> {
@@ -57,24 +58,7 @@ function isEnoent(e: unknown): e is { code: "ENOENT" } {
 }
 
 export async function write(p: string, content: string | Buffer | Uint8Array, mode?: number): Promise<void> {
-  try {
-    if (mode) {
-      await writeFile(p, content, { mode })
-    } else {
-      await writeFile(p, content)
-    }
-  } catch (e) {
-    if (isEnoent(e)) {
-      await mkdir(dirname(p), { recursive: true })
-      if (mode) {
-        await writeFile(p, content, { mode })
-      } else {
-        await writeFile(p, content)
-      }
-      return
-    }
-    throw e
-  }
+  await AppFileSystem.writeAtomic(p, content, mode)
 }
 
 export async function writeJson(p: string, data: unknown, mode?: number): Promise<void> {

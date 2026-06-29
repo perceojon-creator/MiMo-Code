@@ -1,5 +1,5 @@
 import { NodeFileSystem } from "@effect/platform-node"
-import { dirname, join, relative, resolve as pathResolve } from "path"
+import { basename, dirname, join, relative, resolve as pathResolve } from "path"
 import { realpathSync } from "fs"
 import * as NFS from "fs/promises"
 import { lookup } from "mime-types"
@@ -79,8 +79,10 @@ export namespace AppFileSystem {
 
       const writeJson = Effect.fn("FileSystem.writeJson")(function* (path: string, data: unknown, mode?: number) {
         const content = JSON.stringify(data, null, 2)
-        yield* fs.writeFileString(path, content)
-        if (mode) yield* fs.chmod(path, mode)
+        yield* Effect.tryPromise({
+          try: () => writeAtomic(path, content, mode),
+          catch: (cause) => new FileSystemError({ method: "writeJson", cause }),
+        })
       })
 
       const ensureDir = Effect.fn("FileSystem.ensureDir")(function* (path: string) {
@@ -92,19 +94,10 @@ export namespace AppFileSystem {
         content: string | Uint8Array,
         mode?: number,
       ) {
-        const write = typeof content === "string" ? fs.writeFileString(path, content) : fs.writeFile(path, content)
-
-        yield* write.pipe(
-          Effect.catchIf(
-            (e) => e.reason._tag === "NotFound",
-            () =>
-              Effect.gen(function* () {
-                yield* fs.makeDirectory(dirname(path), { recursive: true })
-                yield* write
-              }),
-          ),
-        )
-        if (mode) yield* fs.chmod(path, mode)
+        yield* Effect.tryPromise({
+          try: () => writeAtomic(path, content, mode),
+          catch: (cause) => new FileSystemError({ method: "writeWithDirs", cause }),
+        })
       })
 
       const glob = Effect.fn("FileSystem.glob")(function* (pattern: string, options?: Glob.Options) {
@@ -184,6 +177,40 @@ export namespace AppFileSystem {
   // Pure helpers that don't need Effect (path manipulation, sync operations)
   export function mimeType(p: string): string {
     return lookup(p) || "application/octet-stream"
+  }
+
+  /**
+   * Atomic file write: write to a sibling temp file, then rename onto the
+   * target. Because rename is atomic on a single filesystem, a reader never
+   * observes a partially-written file, and a crash mid-write leaves the
+   * previous content intact (the temp is orphaned, the target is untouched).
+   *
+   * The temp is created with flag "wx" (O_EXCL) and mode 0o600 so it is never
+   * world-readable, even briefly — important because callers persist secrets
+   * here (auth.json tokens). The caller-supplied mode is applied afterward
+   * only when it differs from 0o600.
+   *
+   * Caller MUST validate the target path — this is a low-level helper with no
+   * traversal/symlink checks of its own. Do not use with a world-writable dir.
+   *
+   * Used for everything the agent persists — checkpoints, MEMORY.md, auth.json,
+   * project files — so a Ctrl+C / OOM / disk error can never corrupt state.
+   */
+  export async function writeAtomic(target: string, content: string | Uint8Array, mode?: number): Promise<void> {
+    const dir = dirname(target)
+    const base = basename(target)
+    const tmp = join(dir, `.${base}.${crypto.randomUUID()}.tmp`)
+    try {
+      await NFS.mkdir(dir, { recursive: true })
+      // "wx" = O_EXCL: fails if the temp already exists (defeats temp prediction);
+      // 0o600 = owner-only from the first byte, no world-readable window.
+      await NFS.writeFile(tmp, content, { flag: "wx", mode: 0o600 })
+      if (mode !== undefined && mode !== 0o600) await NFS.chmod(tmp, mode)
+      await NFS.rename(tmp, target)
+    } catch (err) {
+      await NFS.rm(tmp, { force: true })
+      throw err
+    }
   }
 
   export function normalizePath(p: string): string {
