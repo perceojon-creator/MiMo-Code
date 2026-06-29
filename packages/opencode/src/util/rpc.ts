@@ -4,10 +4,28 @@ type Definition = {
 
 export function listen(rpc: Definition) {
   onmessage = async (evt) => {
-    const parsed = JSON.parse(evt.data)
-    if (parsed.type === "rpc.request") {
-      const result = await rpc[parsed.method](parsed.input)
+    // A malformed message (truncated, non-JSON, or a non-RPC control frame) must
+    // not crash the worker's message loop. Parse defensively and ignore anything
+    // that isn't a well-formed rpc.request.
+    let parsed: any
+    try {
+      parsed = JSON.parse(evt.data)
+    } catch {
+      return
+    }
+    if (parsed?.type !== "rpc.request") return
+    // Unknown method: reply with an error result instead of throwing a TypeError
+    // out of the handler (which would leave the caller's pending request hung).
+    const handler = rpc[parsed.method]
+    if (typeof handler !== "function") {
+      postMessage(JSON.stringify({ type: "rpc.result", result: undefined, error: `unknown method: ${parsed.method}`, id: parsed.id }))
+      return
+    }
+    try {
+      const result = await handler(parsed.input)
       postMessage(JSON.stringify({ type: "rpc.result", result, id: parsed.id }))
+    } catch (err) {
+      postMessage(JSON.stringify({ type: "rpc.result", result: undefined, error: (err as Error).message, id: parsed.id }))
     }
   }
 }
@@ -24,15 +42,20 @@ export function client<T extends Definition>(target: {
   const listeners = new Map<string, Set<(data: any) => void>>()
   let id = 0
   target.onmessage = async (evt) => {
-    const parsed = JSON.parse(evt.data)
-    if (parsed.type === "rpc.result") {
+    let parsed: any
+    try {
+      parsed = JSON.parse(evt.data)
+    } catch {
+      return
+    }
+    if (parsed?.type === "rpc.result") {
       const resolve = pending.get(parsed.id)
       if (resolve) {
         resolve(parsed.result)
         pending.delete(parsed.id)
       }
     }
-    if (parsed.type === "rpc.event") {
+    if (parsed?.type === "rpc.event") {
       const handlers = listeners.get(parsed.event)
       if (handlers) {
         for (const handler of handlers) {

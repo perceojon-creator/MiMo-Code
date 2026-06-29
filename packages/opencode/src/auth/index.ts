@@ -56,14 +56,23 @@ export const layer = Layer.effect(
     const decode = Schema.decodeUnknownOption(Info)
 
     const all = Effect.fn("Auth.all")(function* () {
-      if (process.env.MIMOCODE_AUTH_CONTENT) {
-        try {
-          return JSON.parse(process.env.MIMOCODE_AUTH_CONTENT)
-        } catch (err) {}
-      }
+      // Both sources (MIMOCODE_AUTH_CONTENT env var and the auth.json file) flow
+      // through the SAME schema validation. The env var used to be cast
+      // `as Record<string, Info>` with no decode, so a malformed payload leaked
+      // through as a typed Record and exploded later in unrelated code (B-2).
+      // Invalid JSON now yields an empty record instead of undefined.
+      const source: Record<string, unknown> = process.env.MIMOCODE_AUTH_CONTENT
+        ? (() => {
+            try {
+              const parsed = JSON.parse(process.env.MIMOCODE_AUTH_CONTENT)
+              return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {}
+            } catch {
+              return {}
+            }
+          })()
+        : ((yield* fsys.readJson(file).pipe(Effect.orElseSucceed(() => ({})))) as Record<string, unknown>)
 
-      const data = (yield* fsys.readJson(file).pipe(Effect.orElseSucceed(() => ({})))) as Record<string, unknown>
-      return Record.filterMap(data, (value) => Result.fromOption(decode(value), () => undefined))
+      return Record.filterMap(source, (value) => Result.fromOption(decode(value), () => undefined))
     })
 
     const get = Effect.fn("Auth.get")(function* (providerID: string) {
