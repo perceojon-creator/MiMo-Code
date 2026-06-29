@@ -29,9 +29,9 @@ const log = Log.create({ service: "actor.spawn" })
  * `maxContinue` clamp at registration. Plan: platform cap = hard ceiling, hook
  * cap may only narrow, never widen. See spec Future work.
  */
-export const MAX_PRE_REACT = 3
+export const MAX_PRE_REACT = 2
 /** Cap on postStop ReAct re-entries per spawn. See MAX_PRE_REACT TODO. */
-export const MAX_POST_REACT = 3
+export const MAX_POST_REACT = 2
 const RETURN_FORMAT_INSTRUCTION = `
 
 ---

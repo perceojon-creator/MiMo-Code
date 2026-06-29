@@ -117,10 +117,10 @@ export function recallHintLines(toolCfg: ToolStyleConfig | undefined): string[] 
 /**
  * Cap on goal-driven main-loop re-entries per turn — the safety valve against
  * a never-satisfiable condition burning tokens forever. Higher than spawned
- * actors' MAX_PRE_REACT (=3) because main-session goals are usually larger.
+ * actors' MAX_PRE_REACT (=2) because main-session goals are usually larger.
  * TODO: lift to mimocode.json config (e.g. session.maxGoalReact).
  */
-const MAX_GOAL_REACT = 12
+const MAX_GOAL_REACT = 8
 
 /**
  * Number of consecutive finished assistant steps with an identical action
@@ -1720,11 +1720,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const sweepOrphanAssistants = Effect.fn("SessionPrompt.sweepOrphanAssistants")(function* (sessionID: SessionID) {
       const msgs = yield* sessions.messages({ sessionID, agentID: "*" })
       const now = Date.now()
-      // 1 hour — must exceed Task 1's chunkMs (300s) plus Task 2's
-      // PERSISTENT_RETRY worst-case backoff (10 attempts × 5 min cap =
-      // 50 min) so a still-active in-flight request is never falsely
+      // 15 minutes — must exceed Task 1's chunkMs (300s) plus Task 2's
+      // PERSISTENT_RETRY worst-case backoff (6 attempts × 2 min cap =
+      // 12 min) so a still-active in-flight request is never falsely
       // swept while its retry chain is making progress.
-      const ORPHAN_AGE_MS = 3_600_000
+      const ORPHAN_AGE_MS = 15 * 60 * 1000
       for (const m of msgs) {
         if (m.info.role !== "assistant") continue
         if (m.info.time?.completed) continue

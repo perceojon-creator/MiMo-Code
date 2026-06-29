@@ -15,6 +15,7 @@
     "test:ci": "mkdir -p .artifacts/unit && bun test --timeout 30000 --reporter=junit --reporter-outfile=.artifacts/unit/junit.xml",
     "build": "bun run script/build.ts",
     "build:dev": "MIMOCODE_CHANNEL=prod bun run script/build.ts --single",
+    "build:local": "bun run build:dev && bun run script/deploy-local.ts",
     "fix-node-pty": "bun run script/fix-node-pty.ts",
     "upgrade-opentui": "bun run script/upgrade-opentui.ts",
     "dev": "bun run --conditions=browser ./src/index.ts",

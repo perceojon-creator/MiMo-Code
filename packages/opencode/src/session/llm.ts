@@ -61,21 +61,20 @@ export function isTransientCapacityError(error: unknown): boolean {
 /**
  * Persistent-retry schedule with exponential backoff.
  *
- * Exponential backoff 500ms × 2 (i.e. 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256s),
- * each individual delay capped at 5 minutes, total attempts capped at 10.
+ * Exponential backoff 250ms × 2 (i.e. 0.25, 0.5, 1, 2, 4, 8, 16, 32s),
+ * each individual delay capped at 2 minutes, total attempts capped at 6.
  *
- * Worst-case total = 11 attempts × chunkTimeout + cumulative backoff
- *                  ≈ 11 × 8min + 9min ≈ 97 min (with DEFAULT_CHUNK_TIMEOUT = 8min).
+ * Worst-case total ≈ 6 attempts × chunkTimeout + cumulative backoff
+ *                  ≈ 6 × 8min + 1min ≈ 49 min (with DEFAULT_CHUNK_TIMEOUT = 8min).
  *
- * Intentionally NOT capped via Schedule.upTo() — retry persistence under
- * brief upstream outages is the design goal. Bounding per-attempt latency
- * via chunkTimeout is the primary lever for hang-time control.
+ * Reduced from 10→6 attempts, 500ms→250ms base, 5min→2min cap
+ * for faster recovery on transient failures.
  */
-export const persistentRetrySchedule = Schedule.exponential("500 millis", 2).pipe(
+export const persistentRetrySchedule = Schedule.exponential("250 millis", 2).pipe(
   Schedule.modifyDelay((_, delay) =>
-    Effect.succeed(Duration.isLessThanOrEqualTo(delay, Duration.minutes(5)) ? delay : Duration.minutes(5)),
+    Effect.succeed(Duration.isLessThanOrEqualTo(delay, Duration.minutes(2)) ? delay : Duration.minutes(2)),
   ),
-  Schedule.both(Schedule.recurs(10)),
+  Schedule.both(Schedule.recurs(6)),
 )
 
 /**
