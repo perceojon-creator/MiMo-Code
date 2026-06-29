@@ -40,6 +40,7 @@ import { alignToNonToolResultUser } from "./checkpoint-align"
 import { loadPriorDiscoveredTitles } from "./checkpoint-retry"
 import * as CheckpointContext from "./checkpoint-context"
 import { buildProgressDiff } from "./checkpoint-progress-reconcile"
+import { readCheckpointFile } from "./checkpoint-recovery"
 
 const log = Log.create({ service: "session.checkpoint" })
 
@@ -1000,28 +1001,38 @@ export const layer: Layer.Layer<
     })
 
     const loadLatest = Effect.fn("SessionCheckpoint.loadLatest")(function* (sessionID: SessionID) {
-      const content = yield* Effect.promise(() =>
-        Bun.file(checkpointPath(sessionID)).text().catch(() => ""),
-      )
-      return content || undefined
+      const result = yield* Effect.promise(() => readCheckpointFile(checkpointPath(sessionID)))
+      if (result.status === "corrupt") {
+        // Surface corruption instead of silently treating it as "no checkpoint"
+        // (B-4): a crash-truncated file used to erase session state with no signal.
+        log.warn("checkpoint corrupt, starting session without it", { sessionID, error: result.error })
+        return undefined
+      }
+      return result.status === "ok" ? result.content : undefined
     })
 
     const loadCheckpoints = Effect.fn("SessionCheckpoint.loadCheckpoints")(function* (
       sessionID: SessionID,
       _count: number,
     ) {
-      const content = yield* Effect.promise(() =>
-        Bun.file(checkpointPath(sessionID)).text().catch(() => ""),
-      )
-      return content ? [content] : []
+      const result = yield* Effect.promise(() => readCheckpointFile(checkpointPath(sessionID)))
+      if (result.status === "corrupt") {
+        log.warn("checkpoint corrupt, returning empty list", { sessionID, error: result.error })
+        return []
+      }
+      return result.status === "ok" ? [result.content] : []
     })
 
     const renderIndex = Effect.fn("SessionCheckpoint.renderIndex")(function* (sessionID: SessionID) {
       const snapFile = checkpointPath(sessionID)
-      const exists = yield* Effect.promise(() => Bun.file(snapFile).exists())
-      if (!exists) return "No checkpoints yet for this session."
+      const result = yield* Effect.promise(() => readCheckpointFile(snapFile))
+      if (result.status === "absent") return "No checkpoints yet for this session."
+      if (result.status === "corrupt") {
+        log.warn("checkpoint corrupt during render", { sessionID, error: result.error })
+        return `Checkpoint file is corrupt and cannot be rendered: ${result.error}`
+      }
 
-      const content = yield* Effect.promise(() => Bun.file(snapFile).text().catch(() => ""))
+      const content = result.content
       const topicMatch = content.match(/^Topic:\s*(.+)$/m)
       const topic = topicMatch ? topicMatch[1].trim() : "(unknown)"
 
