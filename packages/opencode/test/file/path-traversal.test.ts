@@ -241,3 +241,166 @@ describe("Instance.provide directory safety", () => {
     ).resolves.toBe(sub)
   })
 })
+
+// S-1 symlink traversal: a symlink whose lexical path is INSIDE the project
+// but whose real target is OUTSIDE must be rejected. Before the fix, contains()
+// operated purely on strings via path.relative(), so it never followed the
+// symlink and the read sailed past the boundary.
+describe("File.read symlink traversal protection", () => {
+  test("rejects an in-project symlink whose target escapes the project", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    // A secret file living OUTSIDE the project directory.
+    const outsideDir = path.join(path.dirname(tmp.path), "mimocode-secret-target-" + Math.random().toString(36).slice(2))
+    await fs.mkdir(outsideDir, { recursive: true })
+    const secret = path.join(outsideDir, "secret.txt")
+    await Bun.write(secret, "TOP SECRET CONTENT")
+
+    try {
+      // A symlink INSIDE the project pointing at the outside secret.
+      const link = path.join(tmp.path, "escape-link")
+      await fs.symlink(secret, link)
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          await expect(read("escape-link")).rejects.toThrow("Access denied: path escapes project directory")
+        },
+      })
+    } finally {
+      await fs.rm(outsideDir, { recursive: true, force: true })
+    }
+  })
+
+  test("rejects a symlink directory containing outside files", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    const outsideDir = path.join(path.dirname(tmp.path), "mimocode-secret-dir-" + Math.random().toString(36).slice(2))
+    await fs.mkdir(outsideDir, { recursive: true })
+    await Bun.write(path.join(outsideDir, "leaked.txt"), "leaked")
+
+    try {
+      const link = path.join(tmp.path, "escape-dir")
+      await fs.symlink(outsideDir, link, "dir")
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          // Listing the symlinked dir must also be refused.
+          await expect(list("escape-dir")).rejects.toThrow("Access denied: path escapes project directory")
+        },
+      })
+    } finally {
+      await fs.rm(outsideDir, { recursive: true, force: true })
+    }
+  })
+
+  test("still allows a legitimate symlink that resolves inside the project", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Bun.write(path.join(tmp.path, "real.txt"), "real content")
+    // Symlink inside project pointing to another path inside the same project.
+    await fs.symlink(path.join(tmp.path, "real.txt"), path.join(tmp.path, "ok-link"))
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const result = await read("ok-link")
+        expect(result.content).toBe("real content")
+      },
+    })
+  })
+
+  test("rejects a chained symlink (A -> B -> outside)", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    const outsideDir = path.join(path.dirname(tmp.path), "mimocode-chain-" + Math.random().toString(36).slice(2))
+    await fs.mkdir(outsideDir, { recursive: true })
+    const secret = path.join(outsideDir, "secret.txt")
+    await Bun.write(secret, "CHAIN SECRET")
+
+    try {
+      // link2 points directly at the outside secret; link1 points at link2.
+      const link2 = path.join(tmp.path, "l2")
+      const link1 = path.join(tmp.path, "l1")
+      await fs.symlink(secret, link2)
+      await fs.symlink(link2, link1)
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          await expect(read("l1")).rejects.toThrow("Access denied: path escapes project directory")
+        },
+      })
+    } finally {
+      await fs.rm(outsideDir, { recursive: true, force: true })
+    }
+  })
+
+  test("rejects a relative symlink that escapes the project", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    const outsideDir = path.join(path.dirname(tmp.path), "mimocode-rel-" + Math.random().toString(36).slice(2))
+    await fs.mkdir(outsideDir, { recursive: true })
+    const secret = path.join(outsideDir, "secret.txt")
+    await Bun.write(secret, "REL SECRET")
+
+    try {
+      // Relative target: from tmp.path, "../<outsideDir-name>/secret.txt".
+      const relTarget = path.join("..", path.basename(outsideDir), "secret.txt")
+      await fs.symlink(relTarget, path.join(tmp.path, "rel-link"))
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          await expect(read("rel-link")).rejects.toThrow("Access denied: path escapes project directory")
+        },
+      })
+    } finally {
+      await fs.rm(outsideDir, { recursive: true, force: true })
+    }
+  })
+
+  // Non-git projects set worktree="/" (the sentinel that would match any path).
+  // This is exactly the configuration the original bug lived in: the guard at
+  // containsPath must still reject a symlink that escapes the project directory.
+  test("non-git project: rejects a symlink whose target escapes the directory", () =>
+    withTmpdirOutsideGit(async () => {
+      await using tmp = await tmpdir() // no git -> worktree === "/"
+
+      const outsideDir = path.join(path.dirname(tmp.path), "mimocode-ng-" + Math.random().toString(36).slice(2))
+      await fs.mkdir(outsideDir, { recursive: true })
+      const secret = path.join(outsideDir, "secret.txt")
+      await Bun.write(secret, "NON-GIT SECRET")
+
+      try {
+        await fs.symlink(secret, path.join(tmp.path, "escape-link"))
+
+        await Instance.provide({
+          directory: tmp.path,
+          fn: async () => {
+            await expect(read("escape-link")).rejects.toThrow("Access denied: path escapes project directory")
+          },
+        })
+      } finally {
+        await fs.rm(outsideDir, { recursive: true, force: true })
+      }
+    }))
+
+  test("broken symlink (target does not exist) does not crash read", () =>
+    withTmpdirOutsideGit(async () => {
+      await using tmp = await tmpdir() // no git
+      // A symlink to a non-existent target inside the project. realpathSync
+      // throws ENOENT; resolve falls back to the lexical path, which is inside
+      // the project, so the check passes. read() then finds nothing and returns
+      // empty content — it must NOT throw an unhandled ELOOP/ENOENT.
+      await fs.symlink(path.join(tmp.path, "nope"), path.join(tmp.path, "broken-link"))
+
+      await Instance.provide({
+        directory: tmp.path,
+        fn: async () => {
+          const result = await read("broken-link")
+          expect(result.content).toBe("")
+        },
+      })
+    }))
+})

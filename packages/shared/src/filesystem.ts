@@ -237,7 +237,15 @@ export namespace AppFileSystem {
     try {
       return normalizePath(realpathSync(resolved))
     } catch (e: any) {
-      if (e?.code === "ENOENT") return normalizePath(resolved)
+      // ENOENT: a not-yet-existing or broken-symlink path — fall back to the
+      // lexical path so callers (e.g. containsPath) can still reason about it.
+      // ELOOP/ENOTDIR/EACCES: a pathological or unreadable symlink chain. We
+      // treat these the same way rather than throwing, so a malicious symlink
+      // cannot abort the operation — the boundary check then fails closed on
+      // the unresolved (potentially escaping) lexical path.
+      if (e?.code === "ENOENT" || e?.code === "ELOOP" || e?.code === "ENOTDIR" || e?.code === "EACCES") {
+        return normalizePath(resolved)
+      }
       throw e
     }
   }

@@ -115,14 +115,25 @@ export const Instance = {
    * Check if a path is within the project boundary.
    * Returns true if path is inside Instance.directory OR Instance.worktree.
    * Paths within the worktree but outside the working directory should not trigger external_directory permission.
+   *
+   * The filepath is resolved through realpath first so that a symlink whose
+   * lexical path is inside the project but whose real target lives outside is
+   * rejected. Falling back to the lexical path on ENOENT keeps the check safe
+   * for not-yet-existing paths (there is nothing to read anyway).
+   *
+   * NOTE: there is an inherent TOCTOU window between this check and the
+   * subsequent read/write. This is accepted for a local single-user agent tool;
+   * closing it fully would require O_NOFOLLOW which would reject legitimate
+   * in-project symlinks.
    */
   containsPath(filepath: string, ctx?: InstanceContext) {
     const instance = ctx ?? Instance
-    if (AppFileSystem.contains(instance.directory, filepath)) return true
+    const real = AppFileSystem.resolve(filepath)
+    if (AppFileSystem.contains(instance.directory, real)) return true
     // Non-git projects set worktree to "/" which would match ANY absolute path.
     // Skip worktree check in this case to preserve external_directory permissions.
     if (instance.worktree === "/") return false
-    return AppFileSystem.contains(instance.worktree, filepath)
+    return AppFileSystem.contains(instance.worktree, real)
   },
   /**
    * Captures the current instance ALS context and returns a wrapper that
